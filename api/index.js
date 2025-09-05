@@ -156,6 +156,42 @@ function couponFlex(coupon) {
   const remain = Math.max(0, coupon.usageLimit - coupon.usageCount);
   const exp = toJstString(coupon.expiresAt);
   const redeemUrl = `${process.env.PUBLIC_BASE_URL}/liff?code=${encodeURIComponent(coupon.code)}`;
+
   return {
     type: 'flex',
-    altText: 'クーポンが届きま
+    altText: 'クーポンが届きました',
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: '🎁 クーポン', weight: 'bold', size: 'xl' },
+          { type: 'text', text: `コード：${coupon.code}`, margin: 'md' },
+          { type: 'text', text: `有効期限：${exp}`, size: 'sm', color: '#888' },
+          { type: 'text', text: `残り使用回数：${remain} / ${coupon.usageLimit}`, margin: 'sm' }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            action: { type: 'uri', label: '使う（スタッフ）', uri: redeemUrl }
+          },
+          {
+            type: 'text',
+            text: '※会計時にスタッフが押します',
+            size: 'xs',
+            color: '#888',
+            wrap: true,
+            margin: 'sm'
+          }
+        ]
+      }
+    }
+  };
+}
+
