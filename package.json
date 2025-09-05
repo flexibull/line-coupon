@@ -1,0 +1,11 @@
+{
+  "name": "line-coupon",
+  "type": "module",
+  "scripts": { "start": "node api/index.js" },
+  "dependencies": {
+    "@line/bot-sdk": "^9.2.3",
+    "crypto": "^1.0.1",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.5.0"
+  }
+}
