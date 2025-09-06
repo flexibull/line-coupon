@@ -298,3 +298,47 @@ function couponFlex(coupon) {
   };
 }
 
+let lastSnap;
+try {
+  lastSnap = await db.collection('coupons')
+    .where('userId', '==', userId)
+    .orderBy('issuedAt', 'desc')
+    .limit(1)
+    .get();
+} catch (e) {
+  const msg = String(e?.code || e?.message || e);
+  if (msg.includes('requires an index')) {
+    // フォールバック：インメモリで並び替え
+    const all = await db.collection('coupons')
+      .where('userId', '==', userId)
+      .get();
+    const docs = all.docs
+      .map(d => d)
+      .sort((a, b) =>
+        b.data().issuedAt.toMillis() - a.data().issuedAt.toMillis()
+      )
+      .slice(0, 1);
+    lastSnap = { empty: docs.length === 0, docs };
+  } else {
+    throw e;
+  }
+}
+
+let daySnap;
+try {
+  daySnap = await db.collection('coupons')
+    .where('userId', '==', userId)
+    .where('issuedAt', '>=', startTs)
+    .get();
+} catch (e) {
+  const msg = String(e?.code || e?.message || e);
+  if (msg.includes('requires an index')) {
+    const all = await db.collection('coupons')
+      .where('userId', '==', userId)
+      .get();
+    const filtered = all.docs.filter(d => d.data().issuedAt.toMillis() >= startTs.toMillis());
+    daySnap = { size: filtered.length, docs: filtered };
+  } else {
+    throw e;
+  }
+}
