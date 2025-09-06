@@ -101,24 +101,52 @@ async function handleEvent(event) {
   const now = admin.firestore.Timestamp.now();
   const VALID_HOURS = Number(process.env.VALID_HOURS || 48);
 
-  // 未失効・未消尽の既存券を再提示
+// 未失効・未消尽の既存券を再提示（インデックス未完成時でも落ちないフォールバック付き）
+let couponDoc = null;
+try {
   const snap = await db.collection('coupons')
     .where('userId', '==', userId)
     .where('status', '==', 'active')
     .orderBy('issuedAt', 'desc')
-    .limit(1).get();
+    .limit(1)
+    .get();
 
-  let couponDoc = null;
   if (!snap.empty) {
-    const doc = snap.docs[0]; const data = doc.data();
+    const doc = snap.docs[0];
+    const data = doc.data();
     const expired = data.expiresAt.toDate() < new Date();
     const consumed = data.usageCount >= data.usageLimit;
+
     if (!expired && !consumed) {
       couponDoc = { id: doc.id, ...data };
     } else {
       await doc.ref.update({ status: consumed ? 'consumed' : 'expired' });
     }
   }
+} catch (e) {
+  // インデックスがビルド中／未作成のときのフォールバック
+  const msg = String(e?.code || e?.message || e);
+  if (msg.includes('failed-precondition') || msg.includes('requires an index')) {
+    const snap2 = await db.collection('coupons')
+      .where('userId', '==', userId)   // 複合インデックス不要の単純クエリ
+      .get();
+
+    const nowJS = new Date();
+    const candidates = snap2.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(c =>
+        c.status === 'active' &&
+        c.expiresAt.toDate() > nowJS &&
+        c.usageCount < c.usageLimit
+      )
+      .sort((a, b) => b.issuedAt.toMillis() - a.issuedAt.toMillis());
+
+    couponDoc = candidates[0] || null;
+  } else {
+    throw e; // 別エラーは従来どおり上げる
+  }
+}
+
 
   if (!couponDoc) {
     const issuedAt = now;
