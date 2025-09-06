@@ -92,118 +92,150 @@ app.listen(process.env.PORT || 3000, () => console.log('Server started'));
 // ====== イベント処理 ======
 async function handleEvent(event) {
   if (event.type !== 'message' || event.message.type !== 'text') return;
+
   const userId = event.source.userId;
   const text = (event.message.text || '').trim();
 
-  const KEYWORDS = (process.env.COUPON_KEYWORDS || 'クーポン').split(',').map(s => s.trim());
+  const KEYWORDS = (process.env.COUPON_KEYWORDS || 'クーポン')
+    .split(',')
+    .map(s => s.trim());
   if (!KEYWORDS.includes(text)) return;
 
   const now = admin.firestore.Timestamp.now();
   const VALID_HOURS = Number(process.env.VALID_HOURS || 48);
 
-  // ===== 連発対策（イベント重複除外 + クールダウン + 1日上限） =====
+  // ===== dedup（LINE側の再送などの多重処理防止） =====
+  const evtId = (event.message && event.message.id) || event.replyToken;
+  const dedupRef = db.collection('events').doc(`dedup_${evtId}`);
+  const dedupDoc = await dedupRef.get();
+  if (dedupDoc.exists) return;
+  await dedupRef.set({
+    at: admin.firestore.Timestamp.now(),
+    // TTL を使うなら expireAt を付けて Firestore 側で TTL 有効化
+    // expireAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 24 * 60 * 60 * 1000))
+  });
 
-// 0) イベント重複除外（任意・保険）
-const evtId = (event.message && event.message.id) || event.replyToken;
-const dedupRef = db.collection('events').doc(`dedup_${evtId}`);
-const dedupDoc = await dedupRef.get();
-if (dedupDoc.exists) return;
-await dedupRef.set({
-  at: admin.firestore.Timestamp.now(),
-  // TTLを使うなら expireAt を設定して Firestore でTTL有効化
-  // expireAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 24*60*60*1000))
-});
+  // ===== クールダウン（直近発行から N 分は発行しない） =====
+  const ISSUE_COOLDOWN_MIN = Number(process.env.ISSUE_COOLDOWN_MINUTES || 1440);
 
-// 1) クールダウン（直近発行からN分は発行しない）
-const ISSUE_COOLDOWN_MIN = Number(process.env.ISSUE_COOLDOWN_MINUTES || 1440);
-const lastSnap = await db.collection('coupons')
-  .where('userId', '==', userId)
-  .orderBy('issuedAt', 'desc')
-  .limit(1)
-  .get();
-
-if (!lastSnap.empty) {
-  const last = lastSnap.docs[0].data();
-  const passedMin = (now.toMillis() - last.issuedAt.toMillis()) / 60000;
-  if (passedMin < ISSUE_COOLDOWN_MIN) {
-    const remain = Math.ceil(ISSUE_COOLDOWN_MIN - passedMin);
-    await client.replyMessage(event.replyToken, [{
-      type: 'text',
-      text: `直近にクーポンを発行済みです。発行済みのクーポンをご利用ください`
-    }]);
-    return;
-  }
-}
-
-// 2) 1日の発行上限（任意）
-const ISSUE_MAX_PER_DAY = Number(process.env.ISSUE_MAX_PER_DAY || 1); // 0なら無効
-if (ISSUE_MAX_PER_DAY > 1) {
-  const start = new Date(); start.setHours(0, 0, 0, 0);
-  const startTs = admin.firestore.Timestamp.fromDate(start);
-
-  const daySnap = await db.collection('coupons')
-    .where('userId', '==', userId)
-    .where('issuedAt', '>=', startTs)
-    .get();
-
-  if (daySnap.size >= ISSUE_MAX_PER_DAY) {
-    await client.replyMessage(event.replyToken, [{
-      type: 'text',
-      text: `本日の発行上限に達しました。明日またお試しください。`
-    }]);
-    return;
-  }
-}
-// ===== ここまでを追加してから、下の try { … 既存券検索 } に続く =====
-
-
-// 未失効・未消尽の既存券を再提示（インデックス未完成時でも落ちないフォールバック付き）
-let couponDoc = null;
-try {
-  const snap = await db.collection('coupons')
-    .where('userId', '==', userId)
-    .where('status', '==', 'active')
-    .orderBy('issuedAt', 'desc')
-    .limit(1)
-    .get();
-
-  if (!snap.empty) {
-    const doc = snap.docs[0];
-    const data = doc.data();
-    const expired = data.expiresAt.toDate() < new Date();
-    const consumed = data.usageCount >= data.usageLimit;
-
-    if (!expired && !consumed) {
-      couponDoc = { id: doc.id, ...data };
+  let lastSnap;
+  try {
+    lastSnap = await db.collection('coupons')
+      .where('userId', '==', userId)
+      .orderBy('issuedAt', 'desc')
+      .limit(1)
+      .get();
+  } catch (e) {
+    const msg = String(e?.code || e?.message || e);
+    if (msg.includes('requires an index')) {
+      // フォールバック：インメモリで並べ替え
+      const all = await db.collection('coupons')
+        .where('userId', '==', userId)
+        .get();
+      const docs = all.docs
+        .sort((a, b) => b.data().issuedAt.toMillis() - a.data().issuedAt.toMillis())
+        .slice(0, 1);
+      lastSnap = { empty: docs.length === 0, docs };
     } else {
-      await doc.ref.update({ status: consumed ? 'consumed' : 'expired' });
+      throw e;
     }
   }
-} catch (e) {
-  // インデックスがビルド中／未作成のときのフォールバック
-  const msg = String(e?.code || e?.message || e);
-  if (msg.includes('failed-precondition') || msg.includes('requires an index')) {
-    const snap2 = await db.collection('coupons')
-      .where('userId', '==', userId)   // 複合インデックス不要の単純クエリ
+
+  if (!lastSnap.empty) {
+    const last = lastSnap.docs[0].data();
+    const passedMin = (now.toMillis() - last.issuedAt.toMillis()) / 60000;
+    if (passedMin < ISSUE_COOLDOWN_MIN) {
+      const remain = Math.ceil(ISSUE_COOLDOWN_MIN - passedMin);
+      await client.replyMessage(event.replyToken, [{
+        type: 'text',
+        text: '直近にクーポンを発行済みです。発行済みのクーポンをご利用ください'
+      }]);
+      return;
+    }
+  }
+
+  // ===== 1日の発行上限（0 なら無効） =====
+  const ISSUE_MAX_PER_DAY = Number(process.env.ISSUE_MAX_PER_DAY || 1);
+  if (ISSUE_MAX_PER_DAY > 0) {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const startTs = admin.firestore.Timestamp.fromDate(start);
+
+    let daySnap;
+    try {
+      daySnap = await db.collection('coupons')
+        .where('userId', '==', userId)
+        .where('issuedAt', '>=', startTs)
+        .get();
+    } catch (e) {
+      const msg = String(e?.code || e?.message || e);
+      if (msg.includes('requires an index')) {
+        // フォールバック：クライアント側でフィルタ
+        const all = await db.collection('coupons')
+          .where('userId', '==', userId)
+          .get();
+        const filtered = all.docs.filter(d => d.data().issuedAt.toMillis() >= startTs.toMillis());
+        daySnap = { size: filtered.length, docs: filtered };
+      } else {
+        throw e;
+      }
+    }
+
+    if (daySnap.size >= ISSUE_MAX_PER_DAY) {
+      await client.replyMessage(event.replyToken, [{
+        type: 'text',
+        text: '本日の発行上限に達しました。明日またお試しください。'
+      }]);
+      return;
+    }
+  }
+
+  // ===== 未失効・未消尽の既存券を再提示（インデックス未完成時のフォールバック付き） =====
+  let couponDoc = null;
+  try {
+    const snap = await db.collection('coupons')
+      .where('userId', '==', userId)
+      .where('status', '==', 'active')
+      .orderBy('issuedAt', 'desc')
+      .limit(1)
       .get();
 
-    const nowJS = new Date();
-    const candidates = snap2.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .filter(c =>
-        c.status === 'active' &&
-        c.expiresAt.toDate() > nowJS &&
-        c.usageCount < c.usageLimit
-      )
-      .sort((a, b) => b.issuedAt.toMillis() - a.issuedAt.toMillis());
+    if (!snap.empty) {
+      const doc = snap.docs[0];
+      const data = doc.data();
+      const expired = data.expiresAt.toDate() < new Date();
+      const consumed = data.usageCount >= data.usageLimit;
 
-    couponDoc = candidates[0] || null;
-  } else {
-    throw e; // 別エラーは従来どおり上げる
+      if (!expired && !consumed) {
+        couponDoc = { id: doc.id, ...data };
+      } else {
+        await doc.ref.update({ status: consumed ? 'consumed' : 'expired' });
+      }
+    }
+  } catch (e) {
+    const msg = String(e?.code || e?.message || e);
+    if (msg.includes('failed-precondition') || msg.includes('requires an index')) {
+      const snap2 = await db.collection('coupons')
+        .where('userId', '==', userId)
+        .get();
+
+      const nowJS = new Date();
+      const candidates = snap2.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(c =>
+          c.status === 'active' &&
+          c.expiresAt.toDate() > nowJS &&
+          c.usageCount < c.usageLimit
+        )
+        .sort((a, b) => b.issuedAt.toMillis() - a.issuedAt.toMillis());
+
+      couponDoc = candidates[0] || null;
+    } else {
+      throw e;
+    }
   }
-}
 
-
+  // ===== なければ新規発行 =====
   if (!couponDoc) {
     const issuedAt = now;
     const expiresAt = admin.firestore.Timestamp.fromDate(
@@ -218,28 +250,24 @@ try {
     const n = await ref.get();
     couponDoc = { id: ref.id, ...n.data() };
   }
-// ここまでが if (!couponDoc) { ... } のブロック
 
-// ===== 返信 (配列で送る + ログ) =====
-const flex = couponFlex(couponDoc);
-const redeemUrl =
-  `${process.env.PUBLIC_BASE_URL}/liff?code=${encodeURIComponent(couponDoc.code)}`;
-console.log('redeemUrl:', redeemUrl);
+  // ===== 返信（配列で送る & ログ） =====
+  const flex = couponFlex(couponDoc);
+  const redeemUrl = `${process.env.PUBLIC_BASE_URL}/liff?code=${encodeURIComponent(couponDoc.code)}`;
+  console.log('redeemUrl:', redeemUrl);
 
-try {
-  // メッセージは配列で送る
-  await client.replyMessage(event.replyToken, [flex]);
-} catch (err) {
-  const resp = err?.response || err?.originalError?.response;
-  console.error('LINE reply error status:', resp?.status);
-  console.error('LINE reply error data:', JSON.stringify(resp?.data, null, 2));
-  console.error('LINE reply error message:', err?.message);
+  try {
+    await client.replyMessage(event.replyToken, [flex]);
+  } catch (err) {
+    const resp = err?.response || err?.originalError?.response;
+    console.error('LINE reply error status:', resp?.status);
+    console.error('LINE reply error data:', JSON.stringify(resp?.data, null, 2));
+    console.error('LINE reply error message:', err?.message);
+  }
+
+  return;
 }
 
-return;  // 返信したら終了
-} // ← ← ← これが handleEvent 関数の閉じカッコ
-
-// ここで処理を終わらせるだけなら return; を置いてもOK
 
 
 function genCode() {
