@@ -101,6 +101,62 @@ async function handleEvent(event) {
   const now = admin.firestore.Timestamp.now();
   const VALID_HOURS = Number(process.env.VALID_HOURS || 48);
 
+  // ===== 連発対策（イベント重複除外 + クールダウン + 1日上限） =====
+
+// 0) イベント重複除外（任意・保険）
+const evtId = (event.message && event.message.id) || event.replyToken;
+const dedupRef = db.collection('events').doc(`dedup_${evtId}`);
+const dedupDoc = await dedupRef.get();
+if (dedupDoc.exists) return;
+await dedupRef.set({
+  at: admin.firestore.Timestamp.now(),
+  // TTLを使うなら expireAt を設定して Firestore でTTL有効化
+  // expireAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 24*60*60*1000))
+});
+
+// 1) クールダウン（直近発行からN分は発行しない）
+const ISSUE_COOLDOWN_MIN = Number(process.env.ISSUE_COOLDOWN_MINUTES || 1440);
+const lastSnap = await db.collection('coupons')
+  .where('userId', '==', userId)
+  .orderBy('issuedAt', 'desc')
+  .limit(1)
+  .get();
+
+if (!lastSnap.empty) {
+  const last = lastSnap.docs[0].data();
+  const passedMin = (now.toMillis() - last.issuedAt.toMillis()) / 60000;
+  if (passedMin < ISSUE_COOLDOWN_MIN) {
+    const remain = Math.ceil(ISSUE_COOLDOWN_MIN - passedMin);
+    await client.replyMessage(event.replyToken, [{
+      type: 'text',
+      text: `直近にクーポンを発行済みです。発行済みのクーポンをご利用ください`
+    }]);
+    return;
+  }
+}
+
+// 2) 1日の発行上限（任意）
+const ISSUE_MAX_PER_DAY = Number(process.env.ISSUE_MAX_PER_DAY || 1); // 0なら無効
+if (ISSUE_MAX_PER_DAY > 1) {
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const startTs = admin.firestore.Timestamp.fromDate(start);
+
+  const daySnap = await db.collection('coupons')
+    .where('userId', '==', userId)
+    .where('issuedAt', '>=', startTs)
+    .get();
+
+  if (daySnap.size >= ISSUE_MAX_PER_DAY) {
+    await client.replyMessage(event.replyToken, [{
+      type: 'text',
+      text: `本日の発行上限に達しました。明日またお試しください。`
+    }]);
+    return;
+  }
+}
+// ===== ここまでを追加してから、下の try { … 既存券検索 } に続く =====
+
+
 // 未失効・未消尽の既存券を再提示（インデックス未完成時でも落ちないフォールバック付き）
 let couponDoc = null;
 try {
