@@ -162,10 +162,23 @@ try {
     const n = await ref.get();
     couponDoc = { id: ref.id, ...n.data() };
   }
+const flex = couponFlex(couponDoc);
 
-  const flex = couponFlex(couponDoc);
-  return client.replyMessage(event.replyToken, flex);
+// URLの生成をログ（PUBLIC_BASE_URLのミスを可視化）
+const redeemUrl = `${process.env.PUBLIC_BASE_URL}/liff?code=${encodeURIComponent(couponDoc.code)}`;
+console.log('redeemUrl:', redeemUrl);
+
+try {
+  // ★メッセージは配列で送るのが安全
+  await client.replyMessage(event.replyToken, [flex]);
+} catch (err) {
+  const resp = err?.response || err?.originalError?.response;
+  console.error('LINE reply error status:', resp?.status);
+  console.error('LINE reply error data:', JSON.stringify(resp?.data, null, 2));
+  console.error('LINE reply error message:', err?.message);
 }
+// ここで処理を終わらせるだけなら return; を置いてもOK
+
 
 function genCode() {
   return crypto.randomBytes(7).toString('base64url').replace(/[-_]/g, '').slice(0, 10).toUpperCase();
