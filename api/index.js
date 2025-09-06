@@ -215,7 +215,7 @@ function couponFlex(coupon) {
         contents: [
           { type: 'text', text: '🎁 クーポン', weight: 'bold', size: 'xl' },
           { type: 'text', text: `コード：${coupon.code}`, margin: 'md' },
-          { type: 'text', text: `有効期限：${exp}`, size: 'sm', color: '#888' },
+          { type: 'text', text: `有効期限：${exp}`, size: 'sm', color: '#888888' },
           { type: 'text', text: `残り使用回数：${remain} / ${coupon.usageLimit}`, margin: 'sm' }
         ]
       },
@@ -232,7 +232,7 @@ function couponFlex(coupon) {
             type: 'text',
             text: '※会計時にスタッフが押します',
             size: 'xs',
-            color: '#888',
+            color: '#888888',
             wrap: true,
             margin: 'sm'
           }
