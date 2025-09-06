@@ -162,14 +162,16 @@ try {
     const n = await ref.get();
     couponDoc = { id: ref.id, ...n.data() };
   }
-const flex = couponFlex(couponDoc);
+// ここまでが if (!couponDoc) { ... } のブロック
 
-// URLの生成をログ（PUBLIC_BASE_URLのミスを可視化）
-const redeemUrl = `${process.env.PUBLIC_BASE_URL}/liff?code=${encodeURIComponent(couponDoc.code)}`;
+// ===== 返信 (配列で送る + ログ) =====
+const flex = couponFlex(couponDoc);
+const redeemUrl =
+  `${process.env.PUBLIC_BASE_URL}/liff?code=${encodeURIComponent(couponDoc.code)}`;
 console.log('redeemUrl:', redeemUrl);
 
 try {
-  // ★メッセージは配列で送るのが安全
+  // メッセージは配列で送る
   await client.replyMessage(event.replyToken, [flex]);
 } catch (err) {
   const resp = err?.response || err?.originalError?.response;
@@ -177,6 +179,10 @@ try {
   console.error('LINE reply error data:', JSON.stringify(resp?.data, null, 2));
   console.error('LINE reply error message:', err?.message);
 }
+
+return;  // 返信したら終了
+} // ← ← ← これが handleEvent 関数の閉じカッコ
+
 // ここで処理を終わらせるだけなら return; を置いてもOK
 
 
