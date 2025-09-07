@@ -111,7 +111,7 @@
           body: JSON.stringify({ code, pass })
         });
         const json = await res.json().catch(()=>({}));
-        const ok = json.ok === true || json.status === 'OK' || json.status === 'ok' || res.ok;
+        const ok = json.ok === true || json.status === 'OK' || res.ok;
 
         if (ok) {
           $('#status').innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> 消込済み`;
