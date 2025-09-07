@@ -118,10 +118,19 @@ app.post("/redeem", async (req, res) => {
   try {
     const code = (req.body?.code || "").trim().toUpperCase();
     const pass = (req.body?.pass || "").trim();
-    const STAFF_PASS = process.env.STAFF_PASS || "";
+    const STAFF_PASS = process.env.STAFF_PASS ?? "";   // ← 空ならパス不要にする
 
-    if (!code) return res.status(400).json({ status: "BAD_REQUEST", message: "code がありません" });
-    if (!pass || pass !== STAFF_PASS) return res.status(401).json({ status: "INVALID_PASS", message: "スタッフパスが違います" });
+    if (!code) {
+      return res.status(400).json({ status: "BAD_REQUEST", message: "code がありません" });
+    }
+
+    // ← ここを「STAFF_PASS が設定されている時だけ」チェックに変更
+    if (STAFF_PASS && pass !== STAFF_PASS) {
+      return res.status(401).json({ status: "INVALID_PASS", message: "スタッフパスが違います" });
+    }
+
+    // デバッグ（必要なら一時的に）
+    console.log("[redeem]", { code, hasPassEnv: Boolean(STAFF_PASS), passProvided: Boolean(pass) });
 
     const qs = await db.collection("coupons").where("code", "==", code).limit(1).get();
     if (qs.empty) return res.status(404).json({ status: "NOT_FOUND", message: "クーポンが見つかりません" });
@@ -140,12 +149,7 @@ app.post("/redeem", async (req, res) => {
       const newCount = c.usageCount + 1;
       const newStatus = newCount >= c.usageLimit ? "consumed" : "active";
 
-      tx.update(ref, {
-        usageCount: newCount,
-        lastUsedAt: now,
-        status: newStatus
-      });
-
+      tx.update(ref, { usageCount: newCount, lastUsedAt: now, status: newStatus });
       return { ok: true, status: "OK", remain: c.usageLimit - newCount, limit: c.usageLimit };
     });
 
@@ -156,6 +160,7 @@ app.post("/redeem", async (req, res) => {
     return res.status(500).json({ status: "ERROR", message: "処理に失敗しました" });
   }
 });
+
 
 // ===== イベント処理 =====
 async function handleEvent(event) {
