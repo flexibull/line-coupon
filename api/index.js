@@ -83,10 +83,41 @@ app.post('/api/redeem', async (req, res) => {
 });
 
 // スタッフ用の簡易LIFFページ
-app.get('/liff', (_req, res) => {
-  res.sendFile('api/liff.html', { root: '.' });
+// 先頭付近（なければ追記）
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
-app.listen(process.env.PORT || 3000, () => console.log('Server started'));
+// --- 健康チェック ---
+app.get('/health', (_req, res) => {
+  res.type('text').send('ok');
+}); // ← 必ず ); で閉じる
+
+// --- スタッフ用 LIFF ページ ---
+app.get('/liff', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.sendFile(path.join(__dirname, 'liff.html'));
+}); // ← ここも ); で閉じる
+
+// --- Webhook ---
+app.post('/webhook', express.json(), async (req, res) => {
+  try {
+    await Promise.all((req.body.events || []).map(handleEvent));
+    res.sendStatus(200);
+  } catch (e) {
+    console.error(e);
+    res.sendStatus(500);
+  }
+}); // ← ここも ); で閉じる
+
+// （/redeem がこの下か上に既にあるなら OK。なければここに置く）
+
+// --- サーバ起動 ---
+app.listen(process.env.PORT || 3000, () => {
+  console.log('Server started');
+}); // ← ファイルはここで終わり
+
 
 // ====== イベント処理 ======
 async function handleEvent(event) {
