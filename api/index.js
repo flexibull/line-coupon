@@ -324,4 +324,3 @@ function couponFlex(coupon) {
     }
   }
 }
-
