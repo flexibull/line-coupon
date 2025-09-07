@@ -102,7 +102,6 @@
     async function redeem(){
       const pass = $('#pass').value.trim();
       if (!code) return toast('コードが見つかりません', true);
-      if (!pass) { shake('#pass'); return; }
 
       setLoading(true);
       try {

@@ -11,26 +11,35 @@ const __dirname  = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// ===== Firebase Admin 初期化 =====
+// ========== Firebase Admin 初期化（安全ガード付き） ==========
 (() => {
-  if (admin.apps.length) return;
-  const json = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
-  if (json) {
-    admin.initializeApp({ credential: admin.credential.cert(JSON.parse(json)) });
-  } else {
-    // GOOGLE_APPLICATION_CREDENTIALS（サービスアカウントのパス） or GCE/CloudRun のADC
-    admin.initializeApp();
+  try {
+    if (admin.apps.length) return;
+    const json = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (json) {
+      admin.initializeApp({ credential: admin.credential.cert(JSON.parse(json)) });
+    } else {
+      // GOOGLE_APPLICATION_CREDENTIALS のパス or GCE/CloudRun の ADC を利用
+      admin.initializeApp();
+    }
+    console.log("[boot] Firebase initialized");
+  } catch (e) {
+    console.error("[boot] Firebase init error:", e);
+    // 起動だけは続ける（/health が返るように）
   }
 })();
 const db = admin.firestore();
 
-// ===== LINE SDK =====
+// ========== LINE SDK（安全ミドルウェア） ==========
 const client = new line.Client({
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || ""
 });
 const CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET || "";
+const safeLineMw = CHANNEL_SECRET
+  ? line.middleware({ channelSecret: CHANNEL_SECRET })
+  : (_req, _res, next) => next(); // シークレット未設定でも起動できるように
 
-// ===== ユーティリティ =====
+// ========== ユーティリティ ==========
 function genCode(len = 8) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 読みやすい文字
   let s = "";
@@ -38,8 +47,8 @@ function genCode(len = 8) {
   return s;
 }
 function toJstString(ts) {
-  const d = ts.toDate();                    // Firestore Timestamp -> Date
-  const j = new Date(d.getTime() + 9*60*60*1000);
+  const d = ts.toDate(); // Firestore Timestamp -> Date
+  const j = new Date(d.getTime() + 9 * 60 * 60 * 1000);
   const y = j.getUTCFullYear();
   const m = String(j.getUTCMonth() + 1).padStart(2, "0");
   const day = String(j.getUTCDate()).padStart(2, "0");
@@ -63,7 +72,7 @@ function couponFlex(coupon) {
         contents: [
           { type: "text", text: "🎁 クーポン", weight: "bold", size: "lg" },
           { type: "text", text: `コード: ${coupon.code}`, margin: "sm" },
-          { type: "text", text: `有効期限: ${exp}`, size: "sm", color: "#888888" },
+          { type: "text", text: `有効期限: ${exp}`, size: "sm", color: "#888" },
           { type: "text", text: `残り使用回数: ${remain} / ${coupon.usageLimit}`, size: "sm" }
         ]
       },
@@ -80,7 +89,7 @@ function couponFlex(coupon) {
             type: "text",
             text: "※会計時にスタッフが押します",
             size: "xs",
-            color: "#888888",
+            color: "#888",
             wrap: true,
             margin: "sm"
           }
@@ -90,21 +99,22 @@ function couponFlex(coupon) {
   };
 }
 
-// ===== 健康チェック =====
+// ========== 健康チェック & ルート ==========
 app.get("/health", (_req, res) => {
   res.type("text").send("ok");
 });
+app.get("/", (_req, res) => res.redirect("/health"));
 
-// ===== スタッフ用 LIFF ページ（/api と同階層の liff.html を返す） =====
+// スタッフ用 LIFF ページ（api と同階層の liff.html を返す）
 app.get("/liff", (_req, res) => {
   res.set("Cache-Control", "no-store");
   res.sendFile(path.join(__dirname, "liff.html"));
 });
 
-// ===== Webhook（LINE → サーバ） =====
-app.post("/webhook", line.middleware({ channelSecret: CHANNEL_SECRET }), async (req, res) => {
+// ========== Webhook（LINE → サーバ） ==========
+app.post("/webhook", safeLineMw, async (req, res) => {
   try {
-    const events = req.body.events || [];
+    const events = req.body?.events || [];
     await Promise.all(events.map(handleEvent));
     res.sendStatus(200);
   } catch (e) {
@@ -113,24 +123,19 @@ app.post("/webhook", line.middleware({ channelSecret: CHANNEL_SECRET }), async (
   }
 });
 
-// ===== 消込 API（LIFF → サーバ） =====
+// ========== 消込 API（LIFF → サーバ） ==========
 app.post("/redeem", async (req, res) => {
   try {
     const code = (req.body?.code || "").trim().toUpperCase();
     const pass = (req.body?.pass || "").trim();
-    const STAFF_PASS = process.env.STAFF_PASS ?? "";   // ← 空ならパス不要にする
+    const STAFF_PASS = process.env.STAFF_PASS ?? ""; // ← 空ならパスチェックをスキップ
 
     if (!code) {
       return res.status(400).json({ status: "BAD_REQUEST", message: "code がありません" });
     }
-
-    // ← ここを「STAFF_PASS が設定されている時だけ」チェックに変更
     if (STAFF_PASS && pass !== STAFF_PASS) {
       return res.status(401).json({ status: "INVALID_PASS", message: "スタッフパスが違います" });
     }
-
-    // デバッグ（必要なら一時的に）
-    console.log("[redeem]", { code, hasPassEnv: Boolean(STAFF_PASS), passProvided: Boolean(pass) });
 
     const qs = await db.collection("coupons").where("code", "==", code).limit(1).get();
     if (qs.empty) return res.status(404).json({ status: "NOT_FOUND", message: "クーポンが見つかりません" });
@@ -138,7 +143,7 @@ app.post("/redeem", async (req, res) => {
     const ref = qs.docs[0].ref;
     const now = admin.firestore.Timestamp.now();
 
-    const result = await db.runTransaction(async tx => {
+    const result = await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       const c = snap.data();
 
@@ -161,8 +166,7 @@ app.post("/redeem", async (req, res) => {
   }
 });
 
-
-// ===== イベント処理 =====
+// ========== イベント処理 ==========
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") return;
 
@@ -175,14 +179,14 @@ async function handleEvent(event) {
   const now = admin.firestore.Timestamp.now();
   const VALID_HOURS = Number(process.env.VALID_HOURS || 48);
 
-  // --- dedup（再送対策） ---
+  // --- イベント重複防止（保険） ---
   const evtId = (event.message && event.message.id) || event.replyToken;
   const dedupRef = db.collection("events").doc(`dedup_${evtId}`);
-  const already = await dedupRef.get();
-  if (already.exists) return;
+  const dedupDoc = await dedupRef.get();
+  if (dedupDoc.exists) return;
   await dedupRef.set({ at: now });
 
-  // --- クールダウン（直近から N 分は発行しない） ---
+  // --- クールダウン（直近 N 分は発行しない） ---
   const ISSUE_COOLDOWN_MIN = Number(process.env.ISSUE_COOLDOWN_MINUTES || 1440);
   let lastSnap;
   try {
@@ -211,7 +215,7 @@ async function handleEvent(event) {
     }
   }
 
-  // --- 1日の発行上限 ---
+  // --- 1日の発行上限（0 なら無効） ---
   const ISSUE_MAX_PER_DAY = Number(process.env.ISSUE_MAX_PER_DAY || 1);
   if (ISSUE_MAX_PER_DAY > 0) {
     const start = new Date(); start.setHours(0, 0, 0, 0);
@@ -305,7 +309,8 @@ async function handleEvent(event) {
   }
 }
 
-// ===== サーバ起動 =====
-app.listen(process.env.PORT || 3000, () => {
-  console.log("Server started");
+// ========== サーバ起動（0.0.0.0 で listen） ==========
+const PORT = Number(process.env.PORT || 3000);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[boot] Server started on :${PORT}`);
 });
