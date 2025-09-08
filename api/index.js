@@ -184,7 +184,7 @@ async function handleEvent(event) {
   await dedupRef.set({ at: now });
 
   // --- クールダウン ---
-  const ISSUE_COOLDOWN_MIN = Number(process.env.ISSUE_COOLDOWN_MINUTES || 1440);
+  const ISSUE_COOLDOWN_MIN = Number(process.env.ISSUE_COOLDOWN_MINUTES || 0);
   let lastSnap;
   try {
     lastSnap = await db.collection("coupons")
@@ -209,7 +209,7 @@ async function handleEvent(event) {
   }
 
   // --- 1日上限 ---
-  const ISSUE_MAX_PER_DAY = Number(process.env.ISSUE_MAX_PER_DAY || 1);
+  const ISSUE_MAX_PER_DAY = Number(process.env.ISSUE_MAX_PER_DAY || 0);
   if (ISSUE_MAX_PER_DAY > 0) {
     const start = new Date(); start.setHours(0,0,0,0);
     const startTs = admin.firestore.Timestamp.fromDate(start);
