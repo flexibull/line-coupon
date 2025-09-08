@@ -184,7 +184,7 @@ async function handleEvent(event) {
   await dedupRef.set({ at: now });
 
   // --- クールダウン ---
-  const ISSUE_COOLDOWN_MIN = Number(process.env.ISSUE_COOLDOWN_MINUTES || 0);
+  const ISSUE_COOLDOWN_MIN = Number(process.env.ISSUE_COOLDOWN_MINUTES || 1);
   let lastSnap;
   try {
     lastSnap = await db.collection("coupons")
