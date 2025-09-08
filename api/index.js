@@ -90,7 +90,7 @@ function couponFlex(coupon) {
         contents: [
           { type: "text", text: "🎁 クーポン", weight: "bold", size: "lg" },
           { type: "text", text: `コード: ${coupon.code}`, margin: "sm" },
-          { type: "text", text: `有効期限: ${exp}`, size: "sm", color: "#888" },
+          { type: "text", text: `有効期限: ${exp}`, size: "sm", color: "#888888" },
           { type: "text", text: `残り使用回数: ${remain} / ${coupon.usageLimit}`, size: "sm" }
         ]
       },
@@ -98,7 +98,7 @@ function couponFlex(coupon) {
         type: "box", layout: "vertical",
         contents: [
           { type: "button", style: "primary", action: { type: "uri", label: "使う（スタッフ）", uri: redeemUrl } },
-          { type: "text", text: "※会計時にスタッフが押します", size: "xs", color: "#888", wrap: true, margin: "sm" }
+          { type: "text", text: "※会計時にスタッフが押します", size: "xs", color: "#888888", wrap: true, margin: "sm" }
         ]
       }
     }
